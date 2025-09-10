@@ -20,7 +20,7 @@ MODULE_AUTHOR("DFIR Analyst");
 MODULE_DESCRIPTION("Universal Physical Memory Dumper Module");
 
 /* --- Параметры модуля --- */
-static char *dump_path = "/tmp/memory.dmp"; // Путь по умолчанию
+static char *dump_path = "/home/tatsu-victim/memory.dmp"; // Путь по умолчанию
 module_param(dump_path, charp, 0000);
 MODULE_PARM_DESC(dump_path, "Path to save the memory dump");
 
