@@ -204,6 +204,7 @@ static int tcp_send_all(const char *buffer, size_t length)
     return 0;
 }
 
+
 /* ---------- File write helpers (kept versioned) ---------- */
 
 /* Write all bytes to opened file (handles large files via chunking).
@@ -276,7 +277,6 @@ static int file_write_all(const char *buffer, size_t length)
 
     return 0;
 }
-
 
 /* Unified "output" wrapper: either send to TCP or write to file */
 static int output_write(const char *buffer, size_t length)
@@ -387,6 +387,7 @@ static int dump_memory_page(unsigned long pfn, char *scratch_buf)
     return 0;
 }
 
+
 static void create_memory_dump(void)
 {
     unsigned long pfn;
@@ -426,7 +427,6 @@ static void create_memory_dump(void)
 
     // Initialize output
     if (!use_tcp) {
-        //output_file = filp_open(dump_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
         output_file = filp_open(dump_path, O_CREAT | O_WRONLY | O_TRUNC | O_LARGEFILE, 0644);
         if (IS_ERR(output_file)) {
             pr_err("MemDumper: FATAL: Cannot open output file! Err=%ld\n", PTR_ERR(output_file));
@@ -451,10 +451,33 @@ static void create_memory_dump(void)
     for (pfn = 0; pfn < max_pfn; pfn++) {
         // Проверяем различные причины прерывания
         if (fatal_signal_pending(current)) {
-            pr_info("MemDumper: Fatal signal pending: %d\n", fatal_signal_pending(current));
+            pr_info("MemDumper: Fatal signal pending at PFN %lu\n", pfn);
+
+            // Простая проверка каких сигналов ожидают
+            if (sigismember(&current->pending.signal, SIGTERM)) {
+                pr_info("MemDumper: SIGTERM pending\n");
+            }
+            if (sigismember(&current->pending.signal, SIGKILL)) {
+                pr_info("MemDumper: SIGKILL pending\n");
+            }
             break;
         }
-        
+    
+        //if (kthread_should_stop()) {
+        //    pr_info("MemDumper: Kthread stop requested at PFN %lu\n", pfn);
+        //    break;
+        //}
+    
+        if (current->flags & PF_EXITING) {
+            pr_info("MemDumper: Process exiting at PFN %lu\n", pfn);
+            break;
+        }
+    
+        if (signal_pending(current)) {
+            pr_info("MemDumper: Signal pending at PFN %lu\n", pfn);
+            break;
+        }
+            
         if (!pfn_valid(pfn))
             continue;
             
@@ -473,6 +496,13 @@ static void create_memory_dump(void)
             pr_info("MemDumper: PFN %lu/%lu (%u%%)\n", 
                    pfn, max_pfn, percent);
         }
+    }
+    
+    if (pfn < max_pfn) {
+        pr_info("MemDumper: Dump interrupted at PFN %lu/%lu (%lu pages remaining)\n", 
+            pfn, max_pfn, max_pfn - pfn);
+    } else {
+        pr_info("MemDumper: Dump completed successfully\n");
     }
 
     kfree(page_scratch);
