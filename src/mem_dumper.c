@@ -13,23 +13,26 @@
  * Build with your normal kernel build (Makefile provided earlier).
  */
 
+
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/mm.h>
+#include <linux/sched.h>
 #include <linux/fs.h>
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/version.h>
 #include <linux/highmem.h>
 #include <linux/uaccess.h>
+#include <linux/memblock.h>
 #include <linux/errno.h>
 #include <linux/in.h>
 #include <linux/inet.h>
 #include <linux/net.h>
 #include <net/sock.h>
-#include <net/sock.h>
 #include <linux/types.h>
+#include <linux/proc_fs.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("DFIR Analyst");
@@ -51,6 +54,13 @@ static unsigned short remote_port = 0;
 /* MAX_RW_COUNT conservative fallback */
 #ifndef MAX_RW_COUNT
 #define MAX_RW_COUNT ((ssize_t)0x7ffff000)
+#endif
+
+// Макросы для проверки доступности API
+#ifdef CONFIG_MMU
+#define HAVE_OOM_ADJ 1
+#else
+#define HAVE_OOM_ADJ 0
 #endif
 
 /* ---------- Networking helpers ---------- */
@@ -151,14 +161,16 @@ static void close_remote(void)
 /* send all bytes in buffer over mem_sock using kernel_sendmsg
  * returns 0 on success, negative errno on failure
  */
+
 static int tcp_send_all(const char *buffer, size_t length)
 {
     size_t total = 0;
+    int retry_count = 0;
+    
     while (total < length) {
         struct kvec iov;
         struct msghdr msg;
         int sent;
-
         size_t remain = length - total;
         size_t chunk = (remain > (size_t)MAX_RW_COUNT) ? (size_t)MAX_RW_COUNT : remain;
 
@@ -167,16 +179,26 @@ static int tcp_send_all(const char *buffer, size_t length)
         iov.iov_len = chunk;
 
         sent = kernel_sendmsg(mem_sock, &msg, &iov, 1, chunk);
+        
         if (sent < 0) {
+            // Проверяем нужно ли retry
+            if (sent == -EAGAIN || sent == -EWOULDBLOCK) {
+                if (retry_count++ < 10) {
+                    msleep(100); // Пауза 100ms
+                    continue;
+                }
+            }
             pr_err("MemDumper: kernel_sendmsg failed: %d at total=%zu\n", sent, total);
             return sent;
         }
+        
         if (sent == 0) {
-            pr_err("MemDumper: kernel_sendmsg returned 0 (remote closed?) at total=%zu\n", total);
+            pr_err("MemDumper: kernel_sendmsg returned 0 (remote closed?)\n");
             return -EIO;
         }
 
         total += (size_t)sent;
+        retry_count = 0; // Сбрасываем счетчик retry после успешной отправки
     }
 
     return 0;
@@ -187,9 +209,11 @@ static int tcp_send_all(const char *buffer, size_t length)
 /* Write all bytes to opened file (handles large files via chunking).
  * Returns 0 on success, negative errno on failure.
  */
+
 static int file_write_all(const char *buffer, size_t length)
 {
     size_t total = 0;
+    ssize_t ret;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
     mm_segment_t old_fs;
@@ -199,8 +223,19 @@ static int file_write_all(const char *buffer, size_t length)
 
     while (total < length) {
         size_t remain = length - total;
-        size_t chunk = (remain > (size_t)MAX_RW_COUNT) ? (size_t)MAX_RW_COUNT : remain;
-        ssize_t ret;
+        
+        // КРИТИЧЕСКИ ВАЖНО: ограничиваем размер chunk'а 2GB
+        size_t chunk = remain;
+        if (chunk > (size_t)MAX_RW_COUNT) {
+            chunk = (size_t)MAX_RW_COUNT;
+        }
+        
+        // Также проверяем чтобы не превысить 2GB границу в file_position
+        if (file_position > MAX_RW_COUNT && 
+            file_position + chunk > MAX_RW_COUNT * 2) {
+            // Дополнительная страховка
+            chunk = MAX_RW_COUNT - (file_position % MAX_RW_COUNT);
+        }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
         ret = kernel_write(output_file, buffer + total, chunk, &file_position);
@@ -208,23 +243,40 @@ static int file_write_all(const char *buffer, size_t length)
         ret = vfs_write(output_file, buffer + total, chunk, &file_position);
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
-        set_fs(old_fs);
-#endif
-
         if (ret < 0) {
-            pr_err("MemDumper: file write error %zd at pos %llu\n", ret, (unsigned long long)file_position);
+            pr_err("MemDumper: file write error %zd at pos %llu, chunk: %zu\n", 
+                  ret, (unsigned long long)file_position, chunk);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+            set_fs(old_fs);
+#endif
             return (int)ret;
         }
+        
         if (ret == 0) {
-            pr_err("MemDumper: file write returned 0 at pos %llu\n", (unsigned long long)file_position);
+            pr_err("MemDumper: file write returned 0 at pos %llu\n", 
+                  (unsigned long long)file_position);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+            set_fs(old_fs);
+#endif
             return -EIO;
         }
+        
         total += (size_t)ret;
+        
+        // Отладочная информация
+        if (total % (100 * 1024 * 1024) == 0) {
+            pr_info("MemDumper: Written %zu MB, position: %llu\n",
+                   total / (1024 * 1024), (unsigned long long)file_position);
+        }
     }
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+    set_fs(old_fs);
+#endif
 
     return 0;
 }
+
 
 /* Unified "output" wrapper: either send to TCP or write to file */
 static int output_write(const char *buffer, size_t length)
@@ -240,31 +292,97 @@ static int output_write(const char *buffer, size_t length)
     }
 }
 
+/* --------- Protection --------- */
+
+static void protect_from_oom(void)
+{
+    struct file *oom_file;
+    char oom_value[] = "-1000\n";
+    loff_t pos = 0;
+    ssize_t ret;
+    
+    // Пробуем modern oom_score_adj
+    oom_file = filp_open("/proc/self/oom_score_adj", O_WRONLY, 0);
+    if (IS_ERR(oom_file)) {
+        pr_info("MemDumper: oom_score_adj not available, trying oom_adj...\n");
+        
+        // Fallback на старый oom_adj
+        oom_file = filp_open("/proc/self/oom_adj", O_WRONLY, 0);
+        if (IS_ERR(oom_file)) {
+            pr_info("MemDumper: OOM protection not available\n");
+            return;
+        }
+        strcpy(oom_value, "-17\n"); // Старое значение
+    }
+    
+    // Записываем значение
+    ret = kernel_write(oom_file, oom_value, strlen(oom_value), &pos);
+    if (ret < 0) {
+        pr_info("MemDumper: Failed to set OOM value: %zd\n", ret);
+    } else {
+        pr_info("MemDumper: OOM protection set to %s", oom_value);
+    }
+    
+    filp_close(oom_file, NULL);
+}
+
+static void setup_process_protection(void)
+{
+    // 1. Высокий приоритет
+    set_user_nice(current, -20);
+    
+    // 2. Защита от заморозки
+    current->flags |= PF_NOFREEZE;
+    
+    // 3. Защита от OOM Killer
+    protect_from_oom();
+    
+    pr_info("MemDumper: Process protection complete\n");
+}
+
+// RESTORE НЕ НУЖЕН для /proc подхода!
+static void restore_process_settings(void)
+{
+    // Только восстанавливаем то, что меняли напрямую
+    set_user_nice(current, 0);
+    current->flags &= ~PF_NOFREEZE;
+    
+    pr_info("MemDumper: Basic settings restored\n");
+    
+    // OOM настройки восстановятся автоматически при завершении процесса
+}
+
 /* ---------- Memory dump logic (page loop) ---------- */
 
 static int dump_memory_page(unsigned long pfn, char *scratch_buf)
 {
-    struct page *page_ptr;
+    struct page *page;
     void *mapped_address;
     int ret;
 
+    // Безопасная проверка существования страницы
     if (!pfn_valid(pfn))
         return -1;
+        
+    page = pfn_to_page(pfn);
+    
+    // Пробуем маппить с обработкой ошибок
+    mapped_address = kmap_atomic(page);
+    if (!mapped_address) {
+        // Страница существует, но не может быть маппирована
+        // Заполняем нулями вместо реальных данных
+        memset(scratch_buf, 0, PAGE_SIZE);
+    } else {
+        // Успешно маппим - копируем реальные данные
+        memcpy(scratch_buf, mapped_address, PAGE_SIZE);
+        kunmap_atomic(mapped_address);
+    }
 
-    page_ptr = pfn_to_page(pfn);
-    if (!page_ptr)
-        return -1;
-
-    mapped_address = kmap_atomic(page_ptr);
-    if (!mapped_address)
-        return -1;
-
-    memcpy(scratch_buf, mapped_address, PAGE_SIZE);
-    kunmap_atomic(mapped_address);
-
+    // Всегда отправляем данные (даже если это нули)
     ret = output_write(scratch_buf, PAGE_SIZE);
-    if (ret != 0)
+    if (ret != 0) {
         return -1;
+    }
 
     return 0;
 }
@@ -272,20 +390,44 @@ static int dump_memory_page(unsigned long pfn, char *scratch_buf)
 static void create_memory_dump(void)
 {
     unsigned long pfn;
-    unsigned long max_pfn_value;
-    int error_count = 0;
-    int consecutive_errors = 0;
+    unsigned long max_pfn;
     char *page_scratch;
+    int error_count = 0;
+    struct page *page;
     int ret;
+    struct sysinfo info;
+
+    pr_info("MemDumper: Module loaded. Beginning dump process...\n");
+
+    // ЗАЩИТА ПРОЦЕССА
+    setup_process_protection();
+    
+    si_meminfo(&info);
+    pr_info("MemDumper: Total RAM: %lu MB\n", info.totalram * info.mem_unit / 1024 / 1024);
+
+    if (strncmp(dump_path, "tcp:", 4) == 0) {
+        ret = parse_tcp_path(dump_path);
+        if (ret != 0) {
+            pr_err("MemDumper: Invalid tcp path format. Use tcp:IP:PORT or use a fs path\n");
+            return;
+        }
+        pr_info("MemDumper: Will stream memory to %pI4:%u\n", &remote_addr_be, remote_port);
+    } else {
+        use_tcp = false;
+        pr_info("MemDumper: Will write dump to file %s\n", dump_path);
+    }
 
     pr_info("MemDumper: Starting memory dump to %s\n", dump_path);
+    
+    max_pfn = totalram_pages() + totalhigh_pages();
+    pr_info("MemDumper: totalram_pages = %lu\n", totalram_pages());
+    pr_info("MemDumper: totalhigh_pages = %lu\n", totalhigh_pages());  
+    pr_info("MemDumper: Max PFN: %lu\n", max_pfn);
 
-    max_pfn_value = totalram_pages() + totalhigh_pages();
-    pr_info("MemDumper: Estimated max PFN (pages): %lu\n", max_pfn_value);
-    pr_info("MemDumper: sizeof(loff_t)=%zu\n", sizeof(loff_t));
-
+    // Initialize output
     if (!use_tcp) {
-        output_file = filp_open(dump_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+        //output_file = filp_open(dump_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+        output_file = filp_open(dump_path, O_CREAT | O_WRONLY | O_TRUNC | O_LARGEFILE, 0644);
         if (IS_ERR(output_file)) {
             pr_err("MemDumper: FATAL: Cannot open output file! Err=%ld\n", PTR_ERR(output_file));
             output_file = NULL;
@@ -303,40 +445,53 @@ static void create_memory_dump(void)
     page_scratch = kmalloc(PAGE_SIZE, GFP_KERNEL);
     if (!page_scratch) {
         pr_err("MemDumper: cannot allocate scratch buffer\n");
-        if (output_file) filp_close(output_file, NULL);
-        if (mem_sock) close_remote();
-        return;
+        goto cleanup;
     }
 
-    for (pfn = 0; pfn < max_pfn_value; pfn++) {
-        if ((pfn % 10000) == 0)
-            pr_info("MemDumper: PFN %lu, written %llu MB\n", pfn, (unsigned long long)(file_position / (1024*1024)));
+    for (pfn = 0; pfn < max_pfn; pfn++) {
+        // Проверяем различные причины прерывания
+        if (fatal_signal_pending(current)) {
+            pr_info("MemDumper: Fatal signal pending: %d\n", fatal_signal_pending(current));
+            break;
+        }
+        
+        if (!pfn_valid(pfn))
+            continue;
+            
+        page = pfn_to_page(pfn);
+        
+        if (PageReserved(page)) {
+            continue;
+        }
 
         if (dump_memory_page(pfn, page_scratch) != 0) {
             error_count++;
-            consecutive_errors++;
-            if (consecutive_errors > 100) {
-                pr_info("MemDumper: Too many consecutive errors, stopping at PFN %lu\n", pfn);
-                break;
-            }
-        } else {
-            consecutive_errors = 0;
+        }
+
+        if ((pfn % 100000) == 0) {
+            unsigned int percent = (pfn * 100) / max_pfn;
+            pr_info("MemDumper: PFN %lu/%lu (%u%%)\n", 
+                   pfn, max_pfn, percent);
         }
     }
 
     kfree(page_scratch);
 
-    if (output_file)
+cleanup:
+    if (output_file) {
         filp_close(output_file, NULL);
-    if (mem_sock)
+        output_file = NULL;
+    }
+    if (mem_sock) {
         close_remote();
+    }
+    
+    // ВОССТАНОВЛЕНИЕ НАСТРОЕК
+    restore_process_settings();
 
-    pr_info("MemDumper: Dump complete. Last PFN processed: %lu, errors: %d\n", pfn, error_count);
-    if (!use_tcp)
-        pr_info("MemDumper: Output file: %s (Size: %llu bytes)\n", dump_path, (unsigned long long)file_position);
-    else
-        pr_info("MemDumper: Streamed to %pI4:%u\n", &remote_addr_be, remote_port);
+    pr_info("MemDumper: Dump complete. Errors: %d\n", error_count);
 }
+
 
 /* ---------- Module init/exit ---------- */
 
