@@ -340,7 +340,6 @@ static void setup_process_protection(void)
     pr_info("MemDumper: Process protection complete\n");
 }
 
-// RESTORE НЕ НУЖЕН для /proc подхода!
 static void restore_process_settings(void)
 {
     // Только восстанавливаем то, что меняли напрямую
@@ -354,53 +353,62 @@ static void restore_process_settings(void)
 
 /* ---------- Memory dump logic (page loop) ---------- */
 
-static int dump_memory_page(unsigned long pfn, char *scratch_buf)
+static int dump_memory_page_safe(unsigned long pfn, char *scratch_buf)
 {
     struct page *page;
-    void *mapped_address;
-    int ret;
-
-    // Безопасная проверка существования страницы
-    if (!pfn_valid(pfn))
-        return -1;
-        
-    page = pfn_to_page(pfn);
+    void *mapped_address = NULL;
     
-    // Пробуем маппить с обработкой ошибок
+    // Всегда начинаем с заполнения нулями
+    memset(scratch_buf, 0, PAGE_SIZE);
+    
+    // Проверка 1: PFN находится в разумных пределах
+    if (pfn > (1024 * 1024 * 1024 / PAGE_SIZE)) { // > 1GB в PFN
+        return 0;
+    }
+    
+    // Проверка 2: Валидность PFN
+    if (!pfn_valid(pfn)) {
+        return 0;
+    }
+    
+    // Проверка 3: Получение структуры page
+    page = pfn_to_page(pfn);
+    if (!page) {
+        return 0;
+    }
+    
+    // Проверка 4: Страница зарезервирована или особенная
+    if (PageReserved(page)) {
+        return 0;
+    }
+
+    // Пытаемся отобразить страницу
     mapped_address = kmap_atomic(page);
     if (!mapped_address) {
-        // Страница существует, но не может быть маппирована
-        // Заполняем нулями вместо реальных данных
-        memset(scratch_buf, 0, PAGE_SIZE);
-    } else {
-        // Успешно маппим - копируем реальные данные
-        memcpy(scratch_buf, mapped_address, PAGE_SIZE);
-        kunmap_atomic(mapped_address);
+        return 0;
     }
 
-    // Всегда отправляем данные (даже если это нули)
-    ret = output_write(scratch_buf, PAGE_SIZE);
-    if (ret != 0) {
-        return -1;
-    }
+    // Безопасное копирование - используем простой memcpy
+    // В ядре Linux нет try-catch, поэтому полагаемся на проверки выше
+    memcpy(scratch_buf, mapped_address, PAGE_SIZE);
 
+    kunmap_atomic(mapped_address);
     return 0;
 }
 
 
 static void create_memory_dump(void)
 {
-    unsigned long pfn;
-    unsigned long max_pfn;
     char *page_scratch;
     int error_count = 0;
-    struct page *page;
     int ret;
     struct sysinfo info;
+    unsigned long pfn;
+    unsigned long max_pfn;
+    unsigned long total_pages_dumped = 0;
 
     pr_info("MemDumper: Module loaded. Beginning dump process...\n");
 
-    // ЗАЩИТА ПРОЦЕССА
     setup_process_protection();
     
     si_meminfo(&info);
@@ -420,10 +428,10 @@ static void create_memory_dump(void)
 
     pr_info("MemDumper: Starting memory dump to %s\n", dump_path);
     
-    max_pfn = totalram_pages() + totalhigh_pages();
-    pr_info("MemDumper: totalram_pages = %lu\n", totalram_pages());
-    pr_info("MemDumper: totalhigh_pages = %lu\n", totalhigh_pages());  
-    pr_info("MemDumper: Max PFN: %lu\n", max_pfn);
+    // ТОЧНЫЙ расчет max_pfn на основе общего объема памяти
+    max_pfn = (info.totalram * info.mem_unit) / PAGE_SIZE;
+    pr_info("MemDumper: Exact max_pfn: %lu (Total RAM: %lu MB, Page size: %lu)\n", 
+        max_pfn, (info.totalram * info.mem_unit) / 1024 / 1024, PAGE_SIZE);
 
     // Initialize output
     if (!use_tcp) {
@@ -448,63 +456,47 @@ static void create_memory_dump(void)
         goto cleanup;
     }
 
+    // --- САМЫЙ БЕЗОПАСНЫЙ МЕТОД: Обход с максимальной защитой ---
+    pr_info("MemDumper: Iterating over PFNs with maximum protection...\n");
+
     for (pfn = 0; pfn < max_pfn; pfn++) {
-        // Проверяем различные причины прерывания
-        if (fatal_signal_pending(current)) {
-            pr_info("MemDumper: Fatal signal pending at PFN %lu\n", pfn);
-
-            // Простая проверка каких сигналов ожидают
-            if (sigismember(&current->pending.signal, SIGTERM)) {
-                pr_info("MemDumper: SIGTERM pending\n");
-            }
-            if (sigismember(&current->pending.signal, SIGKILL)) {
-                pr_info("MemDumper: SIGKILL pending\n");
-            }
+        // Проверяем прерывание
+        if (fatal_signal_pending(current) || signal_pending(current)) {
+            pr_info("MemDumper: Interrupted at PFN %lu\n", pfn);
             break;
-        }
-    
-        //if (kthread_should_stop()) {
-        //    pr_info("MemDumper: Kthread stop requested at PFN %lu\n", pfn);
-        //    break;
-        //}
-    
-        if (current->flags & PF_EXITING) {
-            pr_info("MemDumper: Process exiting at PFN %lu\n", pfn);
-            break;
-        }
-    
-        if (signal_pending(current)) {
-            pr_info("MemDumper: Signal pending at PFN %lu\n", pfn);
-            break;
-        }
-            
-        if (!pfn_valid(pfn))
-            continue;
-            
-        page = pfn_to_page(pfn);
-        
-        if (PageReserved(page)) {
-            continue;
         }
 
-        if (dump_memory_page(pfn, page_scratch) != 0) {
+        // ОЧЕНЬ осторожная проверка валидности страницы
+        if (!pfn_valid(pfn)) {
+            // Для невалидных страниц записываем нули
+            memset(page_scratch, 0, PAGE_SIZE);
+            goto safe_write;
+        }
+
+        // Дампим страницу с обработкой возможных ошибок
+        if (dump_memory_page_safe(pfn, page_scratch) != 0) {
             error_count++;
+            continue;
         }
 
-        if ((pfn % 100000) == 0) {
-            unsigned int percent = (pfn * 100) / max_pfn;
-            pr_info("MemDumper: PFN %lu/%lu (%u%%)\n", 
-                   pfn, max_pfn, percent);
+safe_write:
+        // Записываем данные (нули или реальные данные)
+        if (output_write(page_scratch, PAGE_SIZE) != 0) {
+            error_count++;
+        } else {
+            total_pages_dumped++;
+        }
+
+        if ((total_pages_dumped % 100000) == 0) {
+            pr_info("MemDumper: Pages dumped: %lu\n", total_pages_dumped);
         }
     }
+
+    pr_info("MemDumper: Dump completed. Total pages dumped: %lu, Errors: %d\n", 
+           total_pages_dumped, error_count);
+    pr_info("MemDumper: Total size: %lu MB\n", 
+           (total_pages_dumped * PAGE_SIZE) / 1024 / 1024);
     
-    if (pfn < max_pfn) {
-        pr_info("MemDumper: Dump interrupted at PFN %lu/%lu (%lu pages remaining)\n", 
-            pfn, max_pfn, max_pfn - pfn);
-    } else {
-        pr_info("MemDumper: Dump completed successfully\n");
-    }
-
     kfree(page_scratch);
 
 cleanup:
@@ -515,13 +507,8 @@ cleanup:
     if (mem_sock) {
         close_remote();
     }
-    
-    // ВОССТАНОВЛЕНИЕ НАСТРОЕК
     restore_process_settings();
-
-    pr_info("MemDumper: Dump complete. Errors: %d\n", error_count);
 }
-
 
 /* ---------- Module init/exit ---------- */
 
