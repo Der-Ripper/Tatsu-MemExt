@@ -1,0 +1,43 @@
+{% extends "base.html" %} {% block content %}
+<div class="dashboard-header">
+    <h1>Memory Dumps</h1>
+    <p>Server listening on port {{ config.SOCKET_PORT }} for incoming dumps</p>
+</div>
+
+<div class="dumps-container">
+    {% if dumps %}
+    <table class="dumps-table">
+        <thead>
+            <tr>
+                <th>Filename</th>
+                <th>Size</th>
+                <th>Uploaded At</th>
+                <th>Source IP</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for dump in dumps %}
+            <tr>
+                <td>{{ dump.original_filename }}</td>
+                <td>{{ (dump.size / 1024 / 1024) | round(2) }} MB</td>
+                <td>{{ dump.uploaded_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                <td>{{ dump.source_ip }}</td>
+                <td class="actions">
+                    <a href="{{ url_for('download_dump', dump_id=dump.id) }}" class="btn btn-download" download>Download</a> {% if is_admin %}
+                    <form action="{{ url_for('delete_dump', dump_id=dump.id) }}" method="POST" style="display: inline;">
+                        <button type="submit" class="btn btn-delete" onclick="return confirm('Are you sure?')">Delete</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="no-dumps">
+        <p>No memory dumps received yet.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

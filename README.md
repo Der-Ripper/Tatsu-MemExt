@@ -7,3 +7,13 @@ dmesg -w
 
 
 sudo insmod lime-$(uname -r).ko "path=tcp:192.168.56.1:31337 format=lime"
+
+
+
+install.sh:
+get headers via uname -r
+git clone my repo
+cd tatsu/src
+make
+insmod
+rmmod
