@@ -3,7 +3,7 @@
 For dumper:
     Get install.sh:
 
-        wget -q https://github.com/Der-Ripper/Tatsu-MemExt/blob/main/src/install.sh
+        wget -q https://raw.githubusercontent.com/Der-Ripper/Tatsu-MemExt/main/src/install.sh
         chmod +x install.sh
         ./install.sh
     
