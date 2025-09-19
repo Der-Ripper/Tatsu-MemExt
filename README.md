@@ -8,5 +8,6 @@ For dumper:
         ./install.sh
     
 For server after git clone:
+
     pip install -r requirements.txt
     python app.py
