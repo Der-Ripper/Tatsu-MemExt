@@ -1,0 +1,218 @@
+{% extends "base.html" %} {% block content %}
+<div class="dashboard-header">
+    <h2>Memory Dumps</h2>
+    {% if is_admin %}
+    <div class="admin-actions">
+        <form method="POST" action="{{ url_for('delete_all_dumps') }}" onsubmit="return confirm('Delete ALL dumps? This cannot be undone!')">
+            <button type="submit" class="delete-all-btn">Delete All</button>
+        </form>
+        <a href="{{ url_for('server_status') }}" class="status-btn" target="_blank">Server Status</a>
+    </div>
+    {% endif %}
+</div>
+
+<div class="server-info">
+    <h3>📡 Dump Receiver Status</h3>
+    <div class="info-grid">
+        <div class="info-item">
+            <span class="info-label">TCP Port:</span>
+            <span class="info-value">4444</span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Status:</span>
+            <span class="status-value online">🟢 Online</span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Ready to receive:</span>
+            <span class="info-value">Yes</span>
+        </div>
+    </div>
+    <p class="info-note">
+        Dumps are automatically received via TCP port 4444. Use your kernel module to send memory dumps to this server.
+    </p>
+</div>
+
+<div class="dumps-list">
+    {% for dump in dumps %}
+    <div class="dump-card">
+        <div class="dump-header">
+            <h3>{{ dump.original_name }}</h3>
+            <span class="dump-size">{{ (dump.file_size / 1024 / 1024 / 1024)|round(2) }} GB</span>
+        </div>
+
+        <div class="dump-meta">
+            <div class="meta-left">
+                <span class="dump-date">{{ dump.upload_date.strftime('%Y-%m-%d %H:%M:%S') }}</span>
+                <span class="dump-source">
+                    {% if dump.machine_name %}
+                    from {{ dump.machine_name }}
+                    {% elif dump.source_ip %}
+                    from {{ dump.source_ip }}
+                    {% endif %}
+                </span>
+            </div>
+            <div class="meta-right">
+                <span class="dump-status {% if dump.analysis_complete %}status-complete{% else %}status-pending{% endif %}">
+                    {% if dump.analysis_complete %}✅ Complete{% else %}⏳ Analyzing...{% endif %}
+                </span>
+            </div>
+        </div>
+
+        <div class="dump-actions">
+            <a href="{{ url_for('download_dump', dump_id=dump.id) }}" class="action-btn download-btn">
+                ⬇️ Download Dump
+            </a>
+            <button onclick="viewReport(this)" data-dump-id="{{ dump.id }}" class="action-btn report-btn">
+                📊 View Report
+            </button> {% if is_admin %}
+            <form method="POST" action="{{ url_for('delete_dump', dump_id=dump.id) }}" style="display: inline;">
+                <button type="submit" class="action-btn delete-btn" onclick="return confirm('Delete this dump?')">
+                    🗑️ Delete
+                </button>
+            </form>
+            {% endif %}
+        </div>
+
+        <div id="report-{{ dump.id }}" class="report-container" style="display: none;">
+            <div class="report-content">
+                <h4>Analysis Report</h4>
+                <div id="report-content-{{ dump.id }}" class="report-data">
+                    Loading...
+                </div>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="no-dumps">
+        <div class="empty-state">
+            <h3>📭 No Memory Dumps Yet</h3>
+            <p>No memory dumps have been received yet.</p>
+            <p>Send a memory dump from a remote machine using TCP port 4444.</p>
+            <div class="connection-info">
+                <h4>How to send a dump:</h4>
+                <code># Using netcat (for testing)<br>cat memory.dump | nc your-server-ip 4444</code>
+                <br><br>
+                <code># Using your kernel module<br># (configure it to connect to this server)</code>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<script>
+    function viewReport(button) {
+        const dumpId = button.getAttribute('data-dump-id');
+        const reportContainer = document.getElementById(`report-${dumpId}`);
+        const reportContent = document.getElementById(`report-content-${dumpId}`);
+
+        if (reportContainer.style.display === 'block') {
+            reportContainer.style.display = 'none';
+            return;
+        }
+
+        // Скрываем все другие открытые отчеты
+        document.querySelectorAll('.report-container').forEach(container => {
+            if (container.id !== `report-${dumpId}`) {
+                container.style.display = 'none';
+            }
+        });
+
+        fetch(`/report/${dumpId}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'pending') {
+                    reportContent.innerHTML = `
+                    <div class="analysis-progress">
+                        <p>⏳ Analysis in progress. This may take several minutes for large memory dumps.</p>
+                        <p>Please check back later or refresh the page.</p>
+                    </div>`;
+                } else if (data.error) {
+                    reportContent.innerHTML = `<p class="error">❌ Error: ${data.error}</p>`;
+                } else {
+                    let html = '<div class="report-section">';
+
+                    // Добавляем время анализа
+                    if (data.analysis_time) {
+                        html += `<p><small>Analysis performed at: ${data.analysis_time}</small></p>`;
+                    }
+
+                    // OS Info
+                    if (data.os_info && Object.keys(data.os_info).length > 0) {
+                        html += '<h5>🖥️ Operating System Information</h5>';
+                        html += '<div class="info-grid">';
+                        for (const [key, value] of Object.entries(data.os_info)) {
+                            html += `
+                            <div class="info-item">
+                                <span class="info-label">${key.replace('_', ' ').toUpperCase()}:</span>
+                                <span class="info-value">${value}</span>
+                            </div>`;
+                        }
+                        html += '</div>';
+                    } else {
+                        html += '<p>No OS information found in dump.</p>';
+                    }
+
+                    // Processes
+                    if (data.processes && data.processes.length > 0) {
+                        html += `<h5>📋 Processes (${data.processes.length} found)</h5>`;
+                        html += '<div class="process-list">';
+                        data.processes.slice(0, 15).forEach(process => {
+                            html += `
+                            <div class="process-item">
+                                <strong>PID ${process.pid}:</strong> ${process.command || 'Unknown'}
+                                <br><small>User: ${process.user || 'N/A'}, CPU: ${process.cpu || 0}%, Mem: ${process.mem || 0}%</small>
+                            </div>`;
+                        });
+                        if (data.processes.length > 15) {
+                            html += `<p>... and ${data.processes.length - 15} more processes</p>`;
+                        }
+                        html += '</div>';
+                    } else {
+                        html += '<p>No process information found in dump.</p>';
+                    }
+
+                    // Network Connections
+                    if (data.network_connections && data.network_connections.length > 0) {
+                        html += `<h5>🌐 Network Connections (${data.network_connections.length} found)</h5>`;
+                        html += '<div class="network-list">';
+                        data.network_connections.slice(0, 10).forEach(conn => {
+                            html += `
+                            <div class="network-item">
+                                <strong>${conn.type || 'N/A'}:</strong> 
+                                ${conn.local_ip || '0.0.0.0'}:${conn.local_port || '0'} → 
+                                ${conn.remote_ip || '0.0.0.0'}:${conn.remote_port || '0'}
+                                <br><small>State: ${conn.state || 'N/A'}</small>
+                            </div>`;
+                        });
+                        if (data.network_connections.length > 10) {
+                            html += `<p>... and ${data.network_connections.length - 10} more connections</p>`;
+                        }
+                        html += '</div>';
+                    } else {
+                        html += '<p>No network connections found in dump.</p>';
+                    }
+
+                    html += '</div>';
+                    reportContent.innerHTML = html;
+                }
+
+                reportContainer.style.display = 'block';
+            })
+            .catch(error => {
+                reportContent.innerHTML = `<p class="error">❌ Error loading report: ${error.message}</p>`;
+                reportContainer.style.display = 'block';
+            });
+    }
+
+    // Автоматическое обновление статуса анализа
+    setInterval(() => {
+        // Проверяем есть ли дампы в процессе анализа
+        const analyzingDumps = document.querySelectorAll('.status-pending');
+        if (analyzingDumps.length > 0) {
+            // Обновляем страницу каждые 30 секунд если есть анализируемые дампы
+            console.log('Refreshing page to update analysis status...');
+            location.reload();
+        }
+    }, 30000);
+</script>
+{% endblock %}

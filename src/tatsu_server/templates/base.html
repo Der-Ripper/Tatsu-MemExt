@@ -4,20 +4,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Memory Dump Server</title>
+    <title>Memory Dump Analyzer</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 
 <body>
     <nav class="navbar">
         <div class="nav-container">
-            <a href="{{ url_for('dashboard') }}" class="nav-brand">Memory Dump Server</a>
-            <div class="nav-menu">
+            <h1 class="nav-title">Memory Dump Analyzer</h1>
+            <div class="nav-links">
                 {% if current_user.is_authenticated %}
-                <span class="nav-user">Welcome, {{ current_user.username }}</span>
-                <a href="{{ url_for('logout') }}" class="nav-link">Logout</a> {% else %}
-                <a href="{{ url_for('login') }}" class="nav-link">Login</a>
-                <a href="{{ url_for('register') }}" class="nav-link">Register</a> {% endif %}
+                <span>Welcome, {{ current_user.username }}</span> {% if current_user.is_admin %}
+                <span class="admin-badge">ADMIN</span> {% endif %}
+                <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a> {% endif %}
             </div>
         </div>
     </nav>
