@@ -1,19 +1,12 @@
 # Tatsu-MemExt
 
- powershell -ExecutionPolicy Bypass -File .\mem_receiver.ps1 -Port 31337 -OutputFile C:\memory.dmp
-ncat -l -p 31337 > memory.dmp
-insmod mem_dumper.ko dump_path=tcp:192.168.56.1:31337
-dmesg -w
+For dumper:
+    Get install.sh:
 
-
-sudo insmod lime-$(uname -r).ko "path=tcp:192.168.56.1:31337 format=lime"
-
-
-
-install.sh:
-get headers via uname -r
-git clone my repo
-cd tatsu/src
-make
-insmod
-rmmod
+        wget -q https://github.com/Der-Ripper/Tatsu-MemExt/blob/main/src/install.sh
+        chmod +x install.sh
+        ./install.sh
+    
+For server after git clone:
+    pip install -r requirements.txt
+    python app.py
