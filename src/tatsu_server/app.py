@@ -64,10 +64,10 @@ def analyze_dump_async(dump_id):
                 dump.analysis_complete = True
                 db.session.commit()
                 
-                print(f"✅ Analysis completed for dump {dump_id}")
+                print(f"Analysis completed for dump {dump_id}")
                 
             except Exception as e:
-                print(f"❌ Error analyzing dump {dump_id}: {e}")
+                print(f"Error analyzing dump {dump_id}: {e}")
                 dump.analysis_result = json.dumps({"error": str(e)})
                 db.session.commit()
 
@@ -80,13 +80,13 @@ def tcp_server():
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((HOST, PORT))
         s.listen(5)
-        print(f"📡 TCP dump receiver listening on {HOST}:{PORT}")
+        print(f"TCP dump receiver listening on {HOST}:{PORT}")
         
         while True:
             conn, addr = None, None
             try:
                 conn, addr = s.accept()
-                print(f"🔗 New connection from {addr[0]}:{addr[1]}")
+                print(f"New connection from {addr[0]}:{addr[1]}")
                 
                 # Создаем уникальное имя файла (только timestamp и uuid)
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -98,7 +98,7 @@ def tcp_server():
                 machine_name = f"machine_{addr[0].replace('.', '_')}"
                 original_name = f"memory_dump_{timestamp}.mem"  # Человеко-читаемое имя
                 
-                print(f"📥 Receiving dump from {addr[0]}, saving as {filename}")
+                print(f"Receiving dump from {addr[0]}, saving as {filename}")
                 
                 # Принимаем дамп
                 total_received = 0
@@ -110,10 +110,10 @@ def tcp_server():
                         f.write(data)
                         total_received += len(data)
                         if total_received % (1024 * 1024 * 100) == 0:
-                            print(f"📊 Received {total_received/(1024*1024):.2f} MB")
+                            print(f"Received {total_received/(1024*1024):.2f} MB")
                 
                 file_size = os.path.getsize(filepath)
-                print(f"✅ Dump received successfully: {file_size/(1024*1024*1024):.2f} GB")
+                print(f"Dump received successfully: {file_size/(1024*1024*1024):.2f} GB")
                 
                 # Создаем запись в базе данных
                 with app.app_context():
@@ -141,10 +141,10 @@ def tcp_server():
                     # Запускаем анализ в отдельном потоке
                     thread = threading.Thread(target=analyze_dump_async, args=(dump.id,))
                     thread.start()
-                    print(f"🔍 Analysis started for dump {dump.id}")
+                    print(f"Analysis started for dump {dump.id}")
                 
             except Exception as e:
-                print(f"❌ TCP error: {e}")
+                print(f"TCP error: {e}")
             finally:
                 if conn:
                     try:
@@ -216,7 +216,7 @@ def download_dump(dump_id):
         flash('File not found or no access permission')
         return redirect(url_for('dashboard'))
     
-    print(f"✅ Downloading: {filepath}")
+    print(f"Downloading: {filepath}")
     
     # Используем original_name для скачивания
     download_filename = dump.original_name
@@ -332,9 +332,9 @@ def create_default_admin():
             db.session.add(test_user)
             
             db.session.commit()
-            print("✅ Default users created:")
-            print("   👑 Admin: username='admin', password='admin'")
-            print("   👤 User:  username='user',  password='user'")
+            print("Default users created:")
+            print("   Admin: username='admin', password='admin'")
+            print("   User:  username='user',  password='user'")
 
 if __name__ == '__main__':
     with app.app_context():
@@ -344,10 +344,10 @@ if __name__ == '__main__':
     # Запускаем TCP сервер в отдельном потоке
     tcp_thread = Thread(target=tcp_server, daemon=True)
     tcp_thread.start()
-    print("📡 TCP dump receiver started on port 4444")
+    print("TCP dump receiver started on port 4444")
     
     # Запускаем веб-сервер
     from waitress import serve
-    print("🌐 Web server starting on http://0.0.0.0:5000")
-    print("💡 Login with: admin/admin or user/user")
+    print("Web server starting on http://0.0.0.0:5000")
+    print("Login with: admin/admin or user/user")
     serve(app, host='0.0.0.0', port=5000)

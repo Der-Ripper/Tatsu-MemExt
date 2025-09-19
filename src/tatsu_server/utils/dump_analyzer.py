@@ -8,7 +8,7 @@ def analyze_dump(dump_path):
     """
     Улучшенный анализатор дампа памяти - ищет реальные структуры данных
     """
-    print(f"🚀 Starting enhanced analysis of: {dump_path}")
+    print(f"Starting enhanced analysis of: {dump_path}")
     result = {
         'os_info': {},
         'processes': [],
@@ -21,34 +21,34 @@ def analyze_dump(dump_path):
     
     try:
         file_size = os.path.getsize(dump_path)
-        print(f"📊 File size: {file_size/(1024*1024*1024):.2f} GB")
+        print(f"File size: {file_size/(1024*1024*1024):.2f} GB")
         
         # Анализируем разные области файла
         with open(dump_path, 'rb') as f:
             # 1. Анализ ядра Linux (первые 2MB)
-            print("🔍 Analyzing kernel structures...")
+            print("Analyzing kernel structures...")
             kernel_data = f.read(2 * 1024 * 1024)  # 2MB
             result['os_info'] = extract_linux_info(kernel_data)
             
             # 2. Поиск строк throughout файла
-            print("🔍 Searching for readable strings...")
+            print("Searching for readable strings...")
             f.seek(0)
             result['strings_found'] = find_meaningful_strings(f, file_size)
             
             # 3. Поиск сетевой информации
-            print("🌐 Searching for network information...")
+            print("Searching for network information...")
             f.seek(0)
             result['network_connections'] = find_network_info(f, file_size)
             
             # 4. Поиск информации о процессах
-            print("📋 Searching for process information...")
+            print("Searching for process information...")
             f.seek(0)
             result['processes'] = find_process_info(f, file_size)
             
-        print(f"✅ Enhanced analysis completed")
+        print(f"Enhanced analysis completed")
         
     except Exception as e:
-        print(f"❌ Error analyzing dump: {e}")
+        print(f"Error analyzing dump: {e}")
         import traceback
         traceback.print_exc()
         result['error'] = str(e)
@@ -73,7 +73,7 @@ def extract_linux_info(data):
         if match:
             try:
                 info['kernel_version'] = match.group(1).decode('utf-8', errors='ignore')
-                print(f"   ✅ Found kernel: {info['kernel_version']}")
+                print(f"   Found kernel: {info['kernel_version']}")
                 break
             except:
                 continue
@@ -90,7 +90,7 @@ def extract_linux_info(data):
         for pattern in patterns:
             if re.search(pattern, data, re.IGNORECASE):
                 info['architecture'] = arch
-                print(f"   ✅ Found architecture: {arch}")
+                print(f"   Found architecture: {arch}")
                 break
         if 'architecture' in info:
             break
@@ -110,7 +110,7 @@ def extract_linux_info(data):
     for pattern, distro in distro_patterns:
         if re.search(pattern, data, re.IGNORECASE):
             info['distribution'] = distro
-            print(f"   ✅ Found distribution: {distro}")
+            print(f"   Found distribution: {distro}")
             break
     
     return info
@@ -298,7 +298,7 @@ def find_process_info(f, file_size):
 # Дополнительная функция для детального анализа
 def detailed_analysis(dump_path):
     """Более детальный анализ для больших дампов"""
-    print(f"🔍 Starting detailed analysis of: {dump_path}")
+    print(f"Starting detailed analysis of: {dump_path}")
     
     results = {
         'sections': [],
